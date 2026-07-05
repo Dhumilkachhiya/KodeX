@@ -1,0 +1,93 @@
+#!/bin/bash
+# Script for running Judge0 workers.
+#
+# Usage: ./scripts/workers
+#
+source ./scripts/load-config
+export | sudo tee /api/environment
+
+run_resque=1
+resque_pid=0
+scheduler_pid=0
+
+date_now() {
+    echo -n $(date +"%Y-%m-%d-%H-%M-%S")
+}
+
+delegate_cgroup_controllers() {
+    local cg_root=$1
+    local subtree_file="$cg_root/cgroup.subtree_control"
+    local procs_file="$cg_root/cgroup.procs"
+    local init_cgroup="$cg_root/init"
+    local controllers="+cpu +memory +io +pids"
+
+    [[ -f "$subtree_file" && -f "$procs_file" ]] || return
+
+    if grep -qw "memory" "$subtree_file" 2> /dev/null; then
+        return
+    fi
+
+    sudo mkdir -p "$init_cgroup"
+
+    local attempts=0
+    while [[ $attempts -lt 5 ]]; do
+        while read -r pid; do
+            [[ -z "$pid" ]] && continue
+            printf "%s" "$pid" | sudo tee -a "$init_cgroup/cgroup.procs" > /dev/null 2>&1 || true
+        done < "$procs_file"
+
+        printf "%s" "$$" | sudo tee -a "$init_cgroup/cgroup.procs" > /dev/null 2>&1 || true
+
+        if printf "%s\n" "$controllers" | sudo tee "$subtree_file" > /dev/null 2>&1; then
+            return
+        fi
+
+        attempts=$((attempts + 1))
+        sleep 0.05
+    done
+
+    echo "[$(date_now)] Failed to enable cgroup controllers at $cg_root" >&2
+}
+
+ensure_isolate_runtime() {
+    local cg_root=${ISOLATE_CGROUP_ROOT:-/sys/fs/cgroup}
+    local runtime_root=/run/isolate
+
+    if [[ ! -d "$cg_root" ]]; then
+        echo "[$(date_now)] Missing cgroup root $cg_root" >&2
+        exit 1
+    fi
+
+    delegate_cgroup_controllers "$cg_root"
+
+    sudo mkdir -p "$runtime_root" "$runtime_root/locks"
+    sudo chown root:root "$runtime_root" "$runtime_root/locks"
+    echo "$cg_root" | sudo tee "$runtime_root/cgroup" > /dev/null
+}
+
+exit_gracefully() {
+    echo "[$(date_now)] Killing workers."
+    run_resque=0
+    kill -SIGQUIT $(pgrep -P $resque_pid)
+    kill -SIGTERM $resque_pid
+}
+
+trap exit_gracefully SIGTERM SIGINT
+
+ensure_isolate_runtime
+
+mkdir -p tmp/pids &> /dev/null
+while [[ $run_resque -eq 1 ]]; do
+    echo "[$(date_now)] Starting scheduler."
+    if ! ps -p $scheduler_pid &> /dev/null; then
+        rake resque:scheduler &
+        scheduler_pid=$!
+    fi
+
+    rm -rf tmp/pids/resque.pid &> /dev/null
+    echo "[$(date_now)] Starting workers."
+    rails resque:workers &
+    resque_pid=$!
+    while ps -p $resque_pid > /dev/null; do sleep 1s; done
+    echo "[$(date_now)] Workers are stopped."
+done
