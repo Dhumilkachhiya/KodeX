@@ -24,7 +24,7 @@ services:
       - ./custom_workers.sh:/api/scripts/workers:ro
     privileged: true
     <<: *default-logging
-    restart: always
+    restart: always 
 
   db:
     image: postgres:16.2
