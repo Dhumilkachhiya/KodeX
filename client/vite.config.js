@@ -8,4 +8,14 @@ export default defineConfig({
     react(),
     tailwindcss()
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          monaco: ['@monaco-editor/react'],
+          vendor: ['react', 'react-dom', 'react-router', 'react-router-dom']
+        }
+      }
+    }
+  }
 })
