@@ -10,6 +10,9 @@ const judge0Client = axios.create({
   baseURL: JUDGE0_API_URL,
   headers: {
     "Content-Type": "application/json",
+    ...(process.env.JUDGE0_AUTH_TOKEN && {
+      "X-Auth-Token": process.env.JUDGE0_AUTH_TOKEN,
+    }),
   },
 });
 
